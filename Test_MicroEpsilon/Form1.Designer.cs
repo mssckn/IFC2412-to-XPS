@@ -218,7 +218,7 @@
             // 
             this.Label6.BackColor = System.Drawing.Color.Silver;
             this.Label6.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-            this.Label6.Font = new System.Drawing.Font("新細明體", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
+            this.Label6.Font = new System.Drawing.Font("PMingLiU", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
             this.Label6.Location = new System.Drawing.Point(359, 145);
             this.Label6.Name = "Label6";
             this.Label6.Size = new System.Drawing.Size(123, 21);
@@ -242,7 +242,7 @@
             // 
             this.label3.BackColor = System.Drawing.Color.Silver;
             this.label3.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-            this.label3.Font = new System.Drawing.Font("新細明體", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
+            this.label3.Font = new System.Drawing.Font("PMingLiU", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
             this.label3.Location = new System.Drawing.Point(605, 145);
             this.label3.Name = "label3";
             this.label3.Size = new System.Drawing.Size(123, 21);
@@ -254,7 +254,7 @@
             // 
             this.label4.BackColor = System.Drawing.Color.Silver;
             this.label4.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-            this.label4.Font = new System.Drawing.Font("新細明體", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
+            this.label4.Font = new System.Drawing.Font("PMingLiU", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
             this.label4.Location = new System.Drawing.Point(482, 145);
             this.label4.Name = "label4";
             this.label4.Size = new System.Drawing.Size(123, 21);
@@ -265,7 +265,7 @@
             // label9
             // 
             this.label9.AutoSize = true;
-            this.label9.Font = new System.Drawing.Font("新細明體", 18F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
+            this.label9.Font = new System.Drawing.Font("PMingLiU", 18F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
             this.label9.Location = new System.Drawing.Point(355, 12);
             this.label9.Name = "label9";
             this.label9.Size = new System.Drawing.Size(106, 24);
@@ -298,7 +298,7 @@
             // 
             this.label8.BackColor = System.Drawing.Color.Silver;
             this.label8.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-            this.label8.Font = new System.Drawing.Font("新細明體", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
+            this.label8.Font = new System.Drawing.Font("PMingLiU", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(136)));
             this.label8.Location = new System.Drawing.Point(728, 145);
             this.label8.Name = "label8";
             this.label8.Size = new System.Drawing.Size(123, 21);

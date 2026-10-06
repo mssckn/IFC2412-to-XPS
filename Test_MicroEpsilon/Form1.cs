@@ -18,6 +18,23 @@ namespace Test_MicroEpsilon
     {
         public static MEDAQLib sensor = null;
 
+        // 每個量測點：CH1 Distance、CH2 Distance、Thickness，共 3 個輸出值
+        private const int VALUES_PER_MEASUREMENT = 3;
+
+        // 每次外部 Trigger 後，IFC2412 輸出 5 組量測值
+        private const int TRIGGER_SAMPLE_COUNT = 5;
+
+        // MAD (Median Absolute Deviation) 離群值判定門檻。
+        // Modified Z-score 的常用門檻為 |Mz| > 3.5。
+        private const double MAD_MODIFIED_Z_THRESHOLD = 3.5;
+
+        // 5 筆中至少保留 3 筆，才接受這個 XY 點的量測結果。
+        private const int MIN_VALID_SAMPLES = 3;
+
+        // TransferData 可能分批拿到資料，所以先累積在這裡
+        private readonly List<int> triggerRawBuffer = new List<int>();
+        private readonly List<double> triggerScaledBuffer = new List<double>();
+
 
         public Form1()
         {
@@ -103,21 +120,8 @@ namespace Test_MicroEpsilon
                         SensorError("ExecSCmd (Update_Output_ETH)", ref sensor);
                 }
 
-                //設定Trigger step size
-                //double protocao = 4;
-                //if (sensor.SetIntExecSCmd("Set_TriggerSource", "SP_TriggerSource", protocao) != ERR_CODE.ERR_NOERROR)
-                //{
-                //    SensorError("Set_TriggerSource", ref sensor);
-                //}
-                //protocao = 40;
-
-                //if (sensor.SetDoubleExecSCmd("Update_TriggerEncoderStepsize", "SP_TriggerEncoderStepsize", protocao) != ERR_CODE.ERR_NOERROR)
-                //{
-                //    SensorError("Set_TriggerCount", ref sensor);
-                //}
-
-
-                //ShowMsg("Set_TriggerCount:" + protocao.ToString());
+                // 設定外部 Trigger：XPS GPIO -> IFC2412 Multifunction Input (MFI)
+                ConfigureExternalTrigger();
 
             }
             catch (Exception ex)
@@ -125,6 +129,49 @@ namespace Test_MicroEpsilon
                 MessageBox.Show(ex.ToString());
             }
         }
+        void ConfigureExternalTrigger()
+        {
+            // SP_TriggerSource:
+            // 0 = NONE, 1 = SYNC, 2 = MFI, 3 = SOFTWARE, 4 = ENCODER1 ...
+            // 這裡使用 MFI，因為 XPS GPIO 要接 IFC2412 的外部 Trigger / Multifunction input。
+            if (sensor.SetIntExecSCmd("Set_TriggerSource", "SP_TriggerSource", 2) != ERR_CODE.ERR_NOERROR)
+            {
+                SensorError("Set_TriggerSource", ref sensor);
+                return;
+            }
+
+            // Trigger mode: 0 = EDGE, 1 = PULSE(level)
+            // 我們要 XPS 每送一個 edge，只觸發一次。
+            if (sensor.SetIntExecSCmd("Set_TriggerMode", "SP_TriggerMode", 0) != ERR_CODE.ERR_NOERROR)
+            {
+                SensorError("Set_TriggerMode", ref sensor);
+                return;
+            }
+
+            // Trigger level: 0 = HIGH / rising edge, 1 = LOW / falling edge
+            // XPS open-collector 拉低時產生 falling edge，因此選 LOW。
+            if (sensor.SetIntExecSCmd("Set_TriggerLevel", "SP_TriggerLevel", 1) != ERR_CODE.ERR_NOERROR)
+            {
+                SensorError("Set_TriggerLevel", ref sensor);
+                return;
+            }
+
+            // 每收到一次 Trigger，輸出 5 組量測值。
+            if (sensor.SetIntExecSCmd("Set_TriggerCount", "SP_TriggerCount", TRIGGER_SAMPLE_COUNT) != ERR_CODE.ERR_NOERROR)
+            {
+                SensorError("Set_TriggerCount", ref sensor);
+                return;
+            }
+
+            // 切換成 Trigger 模式前可能殘留連線初期的連續量測資料，只在這裡清一次。
+            sensor.SetIntExecSCmd("Clear_Buffers", "SP_AllDevices", 1);
+            triggerRawBuffer.Clear();
+            triggerScaledBuffer.Clear();
+
+            ShowMsg("External trigger ready: Source=MFI, Mode=EDGE, Level=LOW, Count=" + TRIGGER_SAMPLE_COUNT);
+        }
+
+
         void GetSensorParameters()
         {
             //ShowMsg("Get all parameters ...");
@@ -182,46 +229,214 @@ namespace Test_MicroEpsilon
         }
 
 
+        private static double Median(List<double> values)
+        {
+            if (values == null || values.Count == 0)
+                throw new ArgumentException("Median requires at least one value.");
+
+            List<double> sorted = new List<double>(values);
+            sorted.Sort();
+
+            int middle = sorted.Count / 2;
+            if ((sorted.Count % 2) == 1)
+                return sorted[middle];
+
+            return (sorted[middle - 1] + sorted[middle]) / 2.0;
+        }
+
+        private List<int> GetMadValidIndices(List<double> thicknessValues, out double median, out double mad)
+        {
+            List<int> validIndices = new List<int>();
+            List<double> finiteValues = new List<double>();
+
+            for (int i = 0; i < thicknessValues.Count; i++)
+            {
+                double value = thicknessValues[i];
+                if (!double.IsNaN(value) && !double.IsInfinity(value))
+                    finiteValues.Add(value);
+            }
+
+            if (finiteValues.Count == 0)
+            {
+                median = double.NaN;
+                mad = double.NaN;
+                return validIndices;
+            }
+
+            median = Median(finiteValues);
+
+            List<double> absoluteDeviations = new List<double>();
+            for (int i = 0; i < finiteValues.Count; i++)
+                absoluteDeviations.Add(Math.Abs(finiteValues[i] - median));
+
+            mad = Median(absoluteDeviations);
+
+            // MAD = 0 時代表至少一半資料完全重合或幾乎重合，
+            // 此時 Modified Z-score 會除以 0。
+            // 採保守策略：只保留與 median 幾乎相同的點。
+            if (mad <= 1e-15)
+            {
+                double tolerance = Math.Max(1e-12, Math.Abs(median) * 1e-12);
+
+                for (int i = 0; i < thicknessValues.Count; i++)
+                {
+                    double value = thicknessValues[i];
+                    if (double.IsNaN(value) || double.IsInfinity(value))
+                        continue;
+
+                    if (Math.Abs(value - median) <= tolerance)
+                        validIndices.Add(i);
+                }
+
+                return validIndices;
+            }
+
+            // Modified Z-score = 0.6745 * (x - median) / MAD
+            for (int i = 0; i < thicknessValues.Count; i++)
+            {
+                double value = thicknessValues[i];
+                if (double.IsNaN(value) || double.IsInfinity(value))
+                    continue;
+
+                double modifiedZ = 0.6745 * (value - median) / mad;
+                if (Math.Abs(modifiedZ) <= MAD_MODIFIED_Z_THRESHOLD)
+                    validIndices.Add(i);
+            }
+
+            return validIndices;
+        }
+
         void TransferData()
         {
-
-            //SetMeasureMode 0:Distance, 1:Thickness (Page.390)
-
-
-            //sensor.ExecSCmd("Software_Trigger");
-            //GetVideo();
-
             int avail = 0;
             ERR_CODE err = sensor.DataAvail(ref avail);
             if (err != ERR_CODE.ERR_NOERROR && err != ERR_CODE.ERR_WARNING)
+            {
                 SensorError("DataAvail", ref sensor);
+                return;
+            }
 
             label7.Text = avail.ToString();
-            if (avail > 0)
+
+            if (avail <= 0)
+                return;
+
+            int[] rawData = new int[avail];
+            double[] scaledData = new double[avail];
+
+            int read = 0;
+            if (sensor.TransferData(rawData, scaledData, avail, ref read) != ERR_CODE.ERR_NOERROR)
             {
-                
-
-                int[] rawData = new int[avail];
-                double[] scaledData = new double[avail];
-
-                //Using TransferData methon to get data.
-                int read = 0;
-                if (sensor.TransferData(rawData, scaledData, avail, ref read) != ERR_CODE.ERR_NOERROR)
-                    SensorError("TransferData", ref sensor);
-
-                Lbl_index0_Raw.Text = rawData[0].ToString();
-                Lbl_index0_Scale.Text = scaledData[0].ToString("0.000000");
-
-                Lbl_index1_Raw.Text = rawData[1].ToString();
-                Lbl_index1_Scale.Text = scaledData[1].ToString("0.000000");
-
-                Lbl_index2_Raw.Text = rawData[2].ToString();
-                Lbl_index2_Scale.Text = scaledData[2].ToString("0.000000");
-
-                //Clear Buffer
-                sensor.SetIntExecSCmd("Clear_Buffers", "SP_AllDevices", 1);
+                SensorError("TransferData", ref sensor);
+                return;
             }
-            
+
+            // TransferData 可能一次只拿到部分資料。
+            // 不要 Clear_Buffers；把實際讀到的值累積起來，直到湊滿 5 組。
+            for (int i = 0; i < read; i++)
+            {
+                triggerRawBuffer.Add(rawData[i]);
+                triggerScaledBuffer.Add(scaledData[i]);
+            }
+
+            int valuesPerTrigger = VALUES_PER_MEASUREMENT * TRIGGER_SAMPLE_COUNT; // 3 x 5 = 15
+
+            while (triggerScaledBuffer.Count >= valuesPerTrigger)
+            {
+                List<double> ch1Values = new List<double>();
+                List<double> ch2Values = new List<double>();
+                List<double> thicknessValues = new List<double>();
+
+                for (int sample = 0; sample < TRIGGER_SAMPLE_COUNT; sample++)
+                {
+                    int baseIndex = sample * VALUES_PER_MEASUREMENT;
+                    ch1Values.Add(triggerScaledBuffer[baseIndex + 0]);
+                    ch2Values.Add(triggerScaledBuffer[baseIndex + 1]);
+                    thicknessValues.Add(triggerScaledBuffer[baseIndex + 2]);
+                }
+
+                double thicknessMedian;
+                double thicknessMad;
+                List<int> validIndices = GetMadValidIndices(
+                    thicknessValues,
+                    out thicknessMedian,
+                    out thicknessMad
+                );
+
+                StringBuilder sampleLog = new StringBuilder();
+                for (int i = 0; i < TRIGGER_SAMPLE_COUNT; i++)
+                {
+                    if (i > 0)
+                        sampleLog.Append(", ");
+
+                    sampleLog.Append(thicknessValues[i].ToString("0.000000"));
+                    if (!validIndices.Contains(i))
+                        sampleLog.Append("(OUT)");
+                }
+
+                if (validIndices.Count >= MIN_VALID_SAMPLES)
+                {
+                    double ch1Sum = 0.0;
+                    double ch2Sum = 0.0;
+                    double thicknessSum = 0.0;
+
+                    for (int i = 0; i < validIndices.Count; i++)
+                    {
+                        int sampleIndex = validIndices[i];
+                        ch1Sum += ch1Values[sampleIndex];
+                        ch2Sum += ch2Values[sampleIndex];
+                        thicknessSum += thicknessValues[sampleIndex];
+                    }
+
+                    double ch1Mean = ch1Sum / validIndices.Count;
+                    double ch2Mean = ch2Sum / validIndices.Count;
+                    double thicknessMean = thicknessSum / validIndices.Count;
+
+                    // Raw 欄位顯示第一個有效 sample 的 raw 值；
+                    // Scale 欄位顯示 MAD 篩選後的平均值。
+                    int firstValidSample = validIndices[0];
+                    int firstValidBaseIndex = firstValidSample * VALUES_PER_MEASUREMENT;
+
+                    Lbl_index0_Raw.Text = triggerRawBuffer[firstValidBaseIndex + 0].ToString();
+                    Lbl_index0_Scale.Text = ch1Mean.ToString("0.000000");
+
+                    Lbl_index1_Raw.Text = triggerRawBuffer[firstValidBaseIndex + 1].ToString();
+                    Lbl_index1_Scale.Text = ch2Mean.ToString("0.000000");
+
+                    Lbl_index2_Raw.Text = triggerRawBuffer[firstValidBaseIndex + 2].ToString();
+                    Lbl_index2_Scale.Text = thicknessMean.ToString("0.000000");
+
+                    ShowMsg(
+                        "Trigger complete | Thickness x5 = [" + sampleLog.ToString() + "]" +
+                        " | Median = " + thicknessMedian.ToString("0.000000") +
+                        " | MAD = " + thicknessMad.ToString("0.000000") +
+                        " | Valid = " + validIndices.Count + "/" + TRIGGER_SAMPLE_COUNT +
+                        " | Final mean = " + thicknessMean.ToString("0.000000")
+                    );
+                }
+                else
+                {
+                    // 有效值少於 3 筆：這個量測點不接受，不硬算平均。
+                    Lbl_index0_Raw.Text = "-";
+                    Lbl_index0_Scale.Text = "INVALID";
+                    Lbl_index1_Raw.Text = "-";
+                    Lbl_index1_Scale.Text = "INVALID";
+                    Lbl_index2_Raw.Text = "-";
+                    Lbl_index2_Scale.Text = "INVALID";
+
+                    ShowMsg(
+                        "Trigger INVALID | Thickness x5 = [" + sampleLog.ToString() + "]" +
+                        " | Median = " + thicknessMedian.ToString("0.000000") +
+                        " | MAD = " + thicknessMad.ToString("0.000000") +
+                        " | Valid = " + validIndices.Count + "/" + TRIGGER_SAMPLE_COUNT +
+                        " (need >= " + MIN_VALID_SAMPLES + ")"
+                    );
+                }
+
+                // 移除這一次 Trigger 已處理的 15 個值；若後面又有資料就留給下一次。
+                triggerRawBuffer.RemoveRange(0, valuesPerTrigger);
+                triggerScaledBuffer.RemoveRange(0, valuesPerTrigger);
+            }
         }
 
 
